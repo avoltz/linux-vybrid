@@ -174,7 +174,10 @@ static void imx_stop_rx(struct uart_port *port)
 	 * we have to wait for it to finish.
 	 */
 	if (sport->enable_dma && sport->dma_is_rxing)
+	{
+		printk("Wait for DMA RX to finish\n");
 		return;
+	}
 
 	temp = readb(sport->port.membase + MXC_UARTCR2);
 	writeb(temp & ~MXC_UARTCR2_RE, sport->port.membase + MXC_UARTCR2);
@@ -491,10 +494,13 @@ static void imx_set_mctrl(struct uart_port *port, unsigned int mctrl)
 	unsigned long temp;
 
 	temp = readb(sport->port.membase + MXC_UARTMODEM) &
-					~MXC_UARTMODEM_RXRTSE;
+					~(MXC_UARTMODEM_RXRTSE | MXC_UARTMODEM_TXCTSE);
 
 	if (mctrl & TIOCM_RTS)
 		temp |= MXC_UARTMODEM_RXRTSE;
+
+	if (mctrl & TIOCM_CTS)
+		temp |= MXC_UARTMODEM_TXCTSE;
 
 	writeb(temp, sport->port.membase + MXC_UARTMODEM);
 }
@@ -523,7 +529,7 @@ static void imx_break_ctl(struct uart_port *port, int break_state)
 #define TXTL 2 /* reset default */
 #define RXTL 1 /* reset default */
 
-static int imx_setup_watermark(struct imx_port *sport, unsigned int mode)
+static void imx_setup_watermark(struct imx_port *sport, unsigned int mode)
 {
 	unsigned char val, old_cr2, cr2;
 
@@ -554,8 +560,6 @@ static int imx_setup_watermark(struct imx_port *sport, unsigned int mode)
 
 	/* restore CR2 */
 	writeb(old_cr2, sport->port.membase + MXC_UARTCR2);
-
-	return 0;
 }
 
 
@@ -575,13 +579,6 @@ static int imx_startup(struct uart_port *port)
 		imx_setup_watermark(sport, 0);
 #endif
 
-	/* disable the DREN bit (Data Ready interrupt enable) before
-	 * requesting IRQs
-	 */
-	temp = readb(sport->port.membase + MXC_UARTCR2);
-
-	writeb(temp & ~MXC_UARTCR2_RIE, sport->port.membase + MXC_UARTCR2);
-
 	/*
 	 * Allocate the IRQ(s)
 	 * Vybrid chips only have one interrupt.
@@ -589,8 +586,7 @@ static int imx_startup(struct uart_port *port)
 		retval = request_irq(sport->port.irq, imx_int, 0,
 				DRIVER_NAME, sport);
 		if (retval) {
-			free_irq(sport->port.irq, sport);
-			goto error_out1;
+			return retval;
 		}
 
 	/* Enable the DMA ops for uart. */
@@ -615,11 +611,10 @@ static int imx_startup(struct uart_port *port)
 
 	spin_lock_irqsave(&sport->port.lock, flags);
 	/*
-	 * Finally, clear and enable interrupts
+	 * Finally enable interrupts and RX/TX
 	 */
-
 	temp = readb(sport->port.membase + MXC_UARTCR2);
-	temp |= MXC_UARTCR2_RIE | MXC_UARTCR2_TIE;
+	temp |= (MXC_UARTCR2_RIE | MXC_UARTCR2_TIE | MXC_UARTCR2_TE | MXC_UARTCR2_RE);
 	writeb(temp, sport->port.membase + MXC_UARTCR2);
 	/*
 	 * Enable modem status interrupts
@@ -630,9 +625,6 @@ static int imx_startup(struct uart_port *port)
 	tty = sport->port.state->port.tty;
 
 	return 0;
-
-error_out1:
-	return retval;
 }
 
 static void imx_shutdown(struct uart_port *port)
@@ -651,8 +643,11 @@ static void imx_shutdown(struct uart_port *port)
 	}
 
 	spin_lock_irqsave(&sport->port.lock, flags);
+
+	/* Disable Rx/Tx and interrupts */
 	temp = readb(sport->port.membase + MXC_UARTCR2);
-	temp &= ~(MXC_UARTCR2_TE | MXC_UARTCR2_RE);
+	temp &= ~(MXC_UARTCR2_TE | MXC_UARTCR2_RE |
+			MXC_UARTCR2_TIE | MXC_UARTCR2_TCIE | MXC_UARTCR2_RIE);
 	writeb(temp, sport->port.membase + MXC_UARTCR2);
 	spin_unlock_irqrestore(&sport->port.lock, flags);
 
@@ -663,16 +658,6 @@ static void imx_shutdown(struct uart_port *port)
 
 	free_irq(sport->port.irq, sport);
 
-	/*
-	 * Disable all interrupts, port and break condition.
-	 */
-
-	spin_lock_irqsave(&sport->port.lock, flags);
-	temp = readb(sport->port.membase + MXC_UARTCR2);
-	temp &= ~(MXC_UARTCR2_TIE | MXC_UARTCR2_TCIE | MXC_UARTCR2_RIE);
-	writeb(temp, sport->port.membase + MXC_UARTCR2);
-
-	spin_unlock_irqrestore(&sport->port.lock, flags);
 }
 
 static void
@@ -691,14 +676,6 @@ imx_set_termios(struct uart_port *port, struct ktermios *termios,
 	cr4 = readb(sport->port.membase + MXC_UARTCR4);
 	bdh = readb(sport->port.membase + MXC_UARTBDH);
 	modem = readb(sport->port.membase + MXC_UARTMODEM);
-	/*
-	 * If we don't support modem control lines, don't allow
-	 * these to be set.
-	 */
-	if (0) {
-		termios->c_cflag &= ~(HUPCL | CRTSCTS | CMSPAR);
-		termios->c_cflag |= CLOCAL;
-	}
 
 	/*
 	 * We only support CS8 and CS7,but CS7 must enable PE.
@@ -1045,6 +1022,7 @@ imx_console_write(struct console *co, const char *s, unsigned int count)
 	unsigned long flags;
 
 	spin_lock_irqsave(&sport->port.lock, flags);
+
 	/*
 	 *	First, save UCR1/2 and then disable interrupts
 	 */
@@ -1064,9 +1042,10 @@ imx_console_write(struct console *co, const char *s, unsigned int count)
 	 *	and restore CR2
 	 */
 	while (!(readb(sport->port.membase + MXC_UARTSR1) & MXC_UARTSR1_TC))
-		;
+		barrier();
 
 	writeb(old_cr2, sport->port.membase + MXC_UARTCR2);
+
 	spin_unlock_irqrestore(&sport->port.lock, flags);
 }
 
@@ -1078,49 +1057,50 @@ static void __init
 imx_console_get_options(struct imx_port *sport, int *baud,
 			   int *parity, int *bits)
 {
+	unsigned char cr1, cr2, bdh, bdl, brfa;
+	unsigned int sbr, uartclk;
+	unsigned int baud_raw;
 
-	if (readb(sport->port.membase + MXC_UARTCR2) &
-			(MXC_UARTCR2_TE | MXC_UARTCR2)) {
-		/* ok, the port was enabled */
-		unsigned char cr1, bdh, bdl, brfa;
-		unsigned int sbr, uartclk;
-		unsigned int baud_raw;
+	cr2 = readb(sport->port.membase + MXC_UARTCR2);
+	cr2 &= (MXC_UARTCR2_TE | MXC_UARTCR2_RE);
+	if (!cr2)
+		return;
+	/* ok, the port was enabled */
 
-		cr1 = readb(sport->port.membase + MXC_UARTCR1);
+	cr1 = readb(sport->port.membase + MXC_UARTCR1);
 
-		*parity = 'n';
-		if (cr1 & MXC_UARTCR1_PE) {
-			if (cr1 & MXC_UARTCR1_PT)
-				*parity = 'o';
-			else
-				*parity = 'e';
-		}
-
-		if (cr1 & MXC_UARTCR1_M)
-			*bits = 9;
+	*parity = 'n';
+	if (cr1 & MXC_UARTCR1_PE) {
+		if (cr1 & MXC_UARTCR1_PT)
+			*parity = 'o';
 		else
-			*bits = 8;
-
-		bdh = readb(sport->port.membase + MXC_UARTBDH) &
-						MXC_UARTBDH_SBR_MASK;
-		bdl = readb(sport->port.membase + MXC_UARTBDL);
-		sbr = bdh;
-		sbr <<= 8;
-		sbr |= bdl;
-		brfa = readb(sport->port.membase + MXC_UARTCR4) &
-						MXC_UARTCR4_BRFA_MASK;
-
-		uartclk = clk_get_rate(sport->clk);
-		/*
-		 * Baud = mod_clk/(16*(sbr[13]+(brfa)/32)
-		 */
-		baud_raw = uartclk/(16 * (sbr + brfa/32));
-
-		if (*baud != baud_raw)
-			printk(KERN_INFO "Serial: Console IMX "
-					"rounded baud rate from %d to %d\n",
-				baud_raw, *baud);
+			*parity = 'e';
 	}
+
+	if (cr1 & MXC_UARTCR1_M)
+		*bits = 9;
+	else
+		*bits = 8;
+
+	bdh = readb(sport->port.membase + MXC_UARTBDH) &
+					MXC_UARTBDH_SBR_MASK;
+	bdl = readb(sport->port.membase + MXC_UARTBDL);
+	sbr = bdh;
+	sbr <<= 8;
+	sbr |= bdl;
+	brfa = readb(sport->port.membase + MXC_UARTCR4) &
+					MXC_UARTCR4_BRFA_MASK;
+
+	uartclk = clk_get_rate(sport->clk);
+	/*
+	 * Baud = mod_clk/(16*(sbr[13]+(brfa)/32)
+	 */
+	baud_raw = uartclk/(16 * (sbr + brfa/32));
+
+	if (*baud != baud_raw)
+		printk(KERN_INFO "Serial: Console IMX "
+				"rounded baud rate from %d to %d\n",
+			baud_raw, *baud);
 }
 
 static int __init
