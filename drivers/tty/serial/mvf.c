@@ -313,15 +313,14 @@ static void imx_start_tx(struct uart_port *port)
 	struct imx_port *sport = (struct imx_port *)port;
 	unsigned char temp;
 
-	if (!sport->enable_dma) {
-		temp = readb(sport->port.membase + MXC_UARTCR2);
-		writeb(temp | MXC_UARTCR2_TIE,
-				sport->port.membase + MXC_UARTCR2);
-	}
-
 	if (sport->enable_dma) {
 		schedule_work(&sport->tsk_dma_tx);
 		return;
+	}
+	else {
+		temp = readb(sport->port.membase + MXC_UARTCR2);
+		writeb(temp | MXC_UARTCR2_TIE,
+				sport->port.membase + MXC_UARTCR2);
 	}
 
 	if (readb(sport->port.membase + MXC_UARTSR1) & MXC_UARTSR1_TDRE)
@@ -435,6 +434,7 @@ static irqreturn_t imx_rxint(int irq, void *dev_id)
 out:
 	spin_unlock_irqrestore(&sport->port.lock, flags);
 
+	//TODO: Check tsk_rx, seems to be edma related.
 	schedule_work(&sport->tsk_rx);
 	return IRQ_HANDLED;
 }
@@ -514,8 +514,6 @@ static void imx_break_ctl(struct uart_port *port, int break_state)
 	unsigned long flags;
 	unsigned char temp;
 
-	spin_lock_irqsave(&sport->port.lock, flags);
-
 	temp = readb(sport->port.membase + MXC_UARTCR2) & ~MXC_UARTCR2_SBK;
 
 	if (break_state != 0)
@@ -523,7 +521,6 @@ static void imx_break_ctl(struct uart_port *port, int break_state)
 
 	writeb(temp, sport->port.membase + MXC_UARTCR2);
 
-	spin_unlock_irqrestore(&sport->port.lock, flags);
 }
 
 #define TXTL 2 /* reset default */
@@ -616,9 +613,7 @@ static int imx_startup(struct uart_port *port)
 	temp = readb(sport->port.membase + MXC_UARTCR2);
 	temp |= (MXC_UARTCR2_RIE | MXC_UARTCR2_TIE | MXC_UARTCR2_TE | MXC_UARTCR2_RE);
 	writeb(temp, sport->port.membase + MXC_UARTCR2);
-	/*
-	 * Enable modem status interrupts
-	 */
+
 	spin_unlock_irqrestore(&sport->port.lock, flags);
 
 
@@ -1021,8 +1016,6 @@ imx_console_write(struct console *co, const char *s, unsigned int count)
 	unsigned int  old_cr2, cr2;
 	unsigned long flags;
 
-	spin_lock_irqsave(&sport->port.lock, flags);
-
 	/*
 	 *	First, save UCR1/2 and then disable interrupts
 	 */
@@ -1046,7 +1039,6 @@ imx_console_write(struct console *co, const char *s, unsigned int count)
 
 	writeb(old_cr2, sport->port.membase + MXC_UARTCR2);
 
-	spin_unlock_irqrestore(&sport->port.lock, flags);
 }
 
 /*
@@ -1233,13 +1225,25 @@ static int serial_imx_probe(struct platform_device *pdev)
 
 	pdata = pdev->dev.platform_data;
 	if (pdata && (pdata->flags & IMXUART_HAVE_RTSCTS))
+	{
 		sport->have_rtscts = 1;
+		printk("IMX UART RTS/CTS enabled\n");
+	}
 	if (pdata && (pdata->flags & IMXUART_USE_DCEDTE))
+	{
 		sport->use_dcedte = 1;
+		printk("IMX UART using DCE/DTE\n");
+	}
 	if (pdata && (pdata->flags & IMXUART_EDMA))
+	{
 		sport->enable_dma = 1;
+		printk("IMX UART EDMA enabled\n");
+	}
 	if (pdata && (pdata->flags & IMXUART_FIFO))
+	{
 		sport->fifo_en = 1;
+		printk("IMX UART FIFO enabled\n");
+	}
 
 	if (pdata && pdata->init) {
 		ret = pdata->init(pdev);
