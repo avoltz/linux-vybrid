@@ -514,6 +514,8 @@ static void imx_break_ctl(struct uart_port *port, int break_state)
 	unsigned long flags;
 	unsigned char temp;
 
+	spin_lock_irqsave(&sport->port.lock, flags);
+
 	temp = readb(sport->port.membase + MXC_UARTCR2) & ~MXC_UARTCR2_SBK;
 
 	if (break_state != 0)
@@ -521,6 +523,7 @@ static void imx_break_ctl(struct uart_port *port, int break_state)
 
 	writeb(temp, sport->port.membase + MXC_UARTCR2);
 
+	spin_unlock_irqrestore(&sport->port.lock, flags);
 }
 
 #define TXTL 2 /* reset default */
@@ -637,6 +640,9 @@ static void imx_shutdown(struct uart_port *port)
 		}
 	}
 
+	while (!(readb(sport->port.membase + MXC_UARTSR1) & MXC_UARTSR1_TC))
+		barrier();
+		
 	spin_lock_irqsave(&sport->port.lock, flags);
 
 	/* Disable Rx/Tx and interrupts */
@@ -1016,6 +1022,7 @@ imx_console_write(struct console *co, const char *s, unsigned int count)
 	unsigned int  old_cr2, cr2;
 	unsigned long flags;
 
+	spin_lock_irqsave(&sport->port.lock, flags);
 	/*
 	 *	First, save UCR1/2 and then disable interrupts
 	 */
@@ -1038,7 +1045,7 @@ imx_console_write(struct console *co, const char *s, unsigned int count)
 		barrier();
 
 	writeb(old_cr2, sport->port.membase + MXC_UARTCR2);
-
+	spin_unlock_irqrestore(&sport->port.lock, flags);
 }
 
 /*
@@ -1215,6 +1222,7 @@ static int serial_imx_probe(struct platform_device *pdev)
 	sport->clk = clk_get(&pdev->dev, "mvf-uart.1");
 	if (IS_ERR(sport->clk)) {
 		ret = PTR_ERR(sport->clk);
+		dev_err(&pdev->dev, "failed to get uart clk: %d\n", ret);
 		goto unmap;
 	}
 
