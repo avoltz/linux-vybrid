@@ -1264,7 +1264,6 @@ static void uart_close(struct tty_struct *tty, struct file *filp)
 	uport = state->uart_port;
 	port = &state->port;
 
-	pr_debug("uart_close(%d) called\n", uport->line);
 
 	mutex_lock(&port->mutex);
 	spin_lock_irqsave(&port->lock, flags);
@@ -1526,7 +1525,6 @@ static int uart_open(struct tty_struct *tty, struct file *filp)
 	int retval, line = tty->index;
 
 	BUG_ON(!tty_locked());
-	pr_debug("uart_open(%d) called\n", line);
 
 	/*
 	 * We take the semaphore inside uart_get to guarantee that we won't
